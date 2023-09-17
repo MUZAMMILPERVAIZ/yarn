@@ -9,6 +9,7 @@ from accelerate import Accelerator
 from accelerate.utils import InitProcessGroupKwargs, set_seed, DummyOptim, DummyScheduler
 from tqdm import tqdm
 from transformers import set_seed, default_data_collator
+from transformers import  LlamaTokenizer
 
 from scaled_rope.modeling_llama_together_yarn import LlamaForCausalLM
 from scaled_rope.configuration_llama import LlamaConfig
@@ -62,14 +63,46 @@ def main(args):
         torch_dtype=torch.bfloat16,
         config=config
     )
+    tokenizer = LlamaTokenizer.from_pretrained(args.model)
+    tokenizer.pad_token = tokenizer.eos_token
 
-    train_dataset = load_dataset(args.dataset, split='train')
+    ds = load_dataset("Open-Orca/OpenOrca", split='train[:10%]', data_files ='1M-GPT4-Augmented.parquet')
+    print('Data Loaded...')
+    def generate_prompt(data_point):
+            return [f"""
+        ### System:
+        {system_prompt}
+        
+        ### User:
+        {question}
+        
+        ### Assistant:
+        {response}
+        
+        """.strip() for system_prompt, question, response in zip(data_point["system_prompt"], data_point["question"], data_point["response"])]
+        
+        
+    BATCH_SIZE = 1024
+        
+    def generate_and_tokenize_prompt(data_point):
+            full_prompt = generate_prompt(data_point)
+            tokenized_full_prompt = tokenizer(full_prompt, padding=False, add_special_tokens=True, truncation=True)
+            return tokenized_full_prompt
+        
+        
+    train_dataset = ds.shuffle().map(generate_and_tokenize_prompt, batched=True, batch_size=BATCH_SIZE)
+    print('Data Tokenized...')
+
+
+    
     train_loader = DataLoader(
         train_dataset,
         collate_fn=default_data_collator,
         shuffle=True,
         batch_size=args.batch_size
     )
+    print('DataLoader Loaded...')
+
 
     if args.lora:
         from peft import get_peft_model, LoraConfig, TaskType
